@@ -121,6 +121,7 @@ class Assembler:
         :raises ValueError: if the name of the insn couldn't be resolved
         :return: Nothing
         """
+        name = name.upper()
         if name not in opcode.opmap:
             raise ValueError("Unknown insn " + name)
         opm = opcode.opmap[name]
