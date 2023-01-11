@@ -1,6 +1,6 @@
 import dis
 
-from assembler import Assembler
+from assembler import Assembler, Label
 
 
 def functions():
@@ -20,13 +20,21 @@ def functions():
     asm = Assembler()
     asm.insn("RESUME", 0)
 
-    asm.insn("LOAD_CONST", asm.consts_create_or_get(func1.pack_code_object()))  # load function's code object
+    asm.insn(
+        "LOAD_CONST", asm.consts_create_or_get(func1.pack_code_object())
+    )  # load function's code object
     asm.insn("MAKE_FUNCTION")  # make function with code object
-    asm.insn("STORE_NAME", asm.names_create_or_get("print_wrapper"))  # store as print_wrapper
+    asm.insn(
+        "STORE_NAME", asm.names_create_or_get("print_wrapper")
+    )  # store as print_wrapper
 
     asm.insn("PUSH_NULL")  # push NULL
-    asm.insn("LOAD_NAME", asm.names_create_or_get("print_wrapper"))  # load print_wrapper function
-    asm.insn("LOAD_CONST", asm.consts_create_or_get("Hello world"))  # load "Hello world"
+    asm.insn(
+        "LOAD_NAME", asm.names_create_or_get("print_wrapper")
+    )  # load print_wrapper function
+    asm.insn(
+        "LOAD_CONST", asm.consts_create_or_get("Hello world")
+    )  # load "Hello world"
     asm.insn("PRECALL", 1)  # logical no-op, but apparently required
     asm.insn("CALL", 1)  # call with 1 arg
     asm.insn("POP_TOP")  # pop return value from print_wrapper
@@ -43,7 +51,9 @@ def hello_world():
 
     asm.insn("PUSH_NULL")  # push NULL
     asm.insn("LOAD_NAME", asm.names_create_or_get("print"))  # load print
-    asm.insn("LOAD_CONST", asm.consts_create_or_get("Hello world"))  # load "Hello world"
+    asm.insn(
+        "LOAD_CONST", asm.consts_create_or_get("Hello world")
+    )  # load "Hello world"
     asm.insn("PRECALL", 1)  # logical no-op, but apparently required
     asm.insn("CALL", 1)  # call with 1 arg
     asm.insn("POP_TOP")  # pop return value from print
@@ -58,36 +68,46 @@ def try_catch():
     asm = Assembler()
     asm.insn("RESUME", 0)
 
-    with asm.try_block(0, False):  # try block A
-        asm.insn("PUSH_NULL")
-        asm.insn("LOAD_NAME", asm.names_create_or_get("ValueError"))  # load ValueError method
-        asm.insn("LOAD_CONST", asm.consts_create_or_get("Hello world"))  # push "Hello world" as argument
-        asm.insn("PRECALL", 1)
-        asm.insn("CALL", 1)  # init ValueError
-        asm.insn("RAISE_VARARGS", 1)  # raise
+    start = asm.label()
+    asm.insn("PUSH_NULL")
+    asm.insn(
+        "LOAD_NAME", asm.names_create_or_get("ValueError")
+    )  # load ValueError method
+    asm.insn(
+        "LOAD_CONST", asm.consts_create_or_get("Hello world")
+    )  # push "Hello world" as argument
+    asm.insn("PRECALL", 1)
+    asm.insn("CALL", 1)  # init ValueError
+    asm.insn("RAISE_VARARGS", 1)  # raise
+    end = asm.label()
+    target = asm.label()
+    asm.add_trycatch(start, end, target, 0, False)
 
-    with asm.try_block(1, True):  # catch block to try block A, itself also try block B
-        asm.insn("PUSH_EXC_INFO")  # push exception to top
-        asm.insn("STORE_NAME", asm.names_create_or_get("e"))  # store exception in `e`
+    start1 = asm.label()
+    asm.insn("PUSH_EXC_INFO")  # push exception to top
+    asm.insn("STORE_NAME", asm.names_create_or_get("e"))  # store exception in `e`
 
-        asm.insn("PUSH_NULL")  # push NULL
-        asm.insn("LOAD_NAME", asm.names_create_or_get("type"))  # load type method
-        asm.insn("LOAD_NAME", asm.names_create_or_get("e"))  # call on `e`
-        asm.insn("PRECALL", 1)
-        asm.insn("CALL", 1)
-        asm.insn("STORE_NAME", asm.names_create_or_get("e1"))  # store result in `e1`
+    asm.insn("PUSH_NULL")  # push NULL
+    asm.insn("LOAD_NAME", asm.names_create_or_get("type"))  # load type method
+    asm.insn("LOAD_NAME", asm.names_create_or_get("e"))  # call on `e`
+    asm.insn("PRECALL", 1)
+    asm.insn("CALL", 1)
+    asm.insn("STORE_NAME", asm.names_create_or_get("e1"))  # store result in `e1`
 
-        asm.insn("PUSH_NULL")
-        asm.insn("LOAD_NAME", asm.names_create_or_get("print"))  # load print method
-        asm.insn("LOAD_NAME", asm.names_create_or_get("e1"))  # load `e1`, type of `e`
-        asm.insn("LOAD_NAME", asm.names_create_or_get("e"))  # load `e` itself
-        asm.insn("PRECALL", 2)
-        asm.insn("CALL", 2)  # call print(e1, e)
-        asm.insn("POP_TOP")  # pop return value of print
-        asm.insn("POP_EXCEPT")  # pop exception
-        asm.insn("LOAD_CONST", asm.consts_create_or_get(None))
-        asm.insn("RETURN_VALUE")  # return None
+    asm.insn("PUSH_NULL")
+    asm.insn("LOAD_NAME", asm.names_create_or_get("print"))  # load print method
+    asm.insn("LOAD_NAME", asm.names_create_or_get("e1"))  # load `e1`, type of `e`
+    asm.insn("LOAD_NAME", asm.names_create_or_get("e"))  # load `e` itself
+    asm.insn("PRECALL", 2)
+    asm.insn("CALL", 2)  # call print(e1, e)
+    asm.insn("POP_TOP")  # pop return value of print
+    asm.insn("POP_EXCEPT")  # pop exception
+    asm.insn("LOAD_CONST", asm.consts_create_or_get(None))
+    asm.insn("RETURN_VALUE")  # return None
+    end1 = asm.label()
 
+    hndlr = asm.label()
+    asm.add_trycatch(start1, end1, hndlr, 1, True)
     # catch block to try block B, standard python practise.
     # if catch block A fails, reraise the exception
     asm.insn("COPY", 0)  # copy 0th stack item to top (the exception)
@@ -116,27 +136,45 @@ def inline_assembly():
         asm = Assembler()
         asm.insn("resume", 0)
 
-        asm.insn("load_name", asm.names_create_or_get("__name__"))  # __module__ = __name__ (kind of)
+        asm.insn(
+            "load_name", asm.names_create_or_get("__name__")
+        )  # __module__ = __name__ (kind of)
         asm.insn("store_name", asm.names_create_or_get("__module__"))
 
-        asm.insn("load_const", asm.consts_create_or_get("real class"))  # __qualname__ = "real class" (kind of)
+        asm.insn(
+            "load_const", asm.consts_create_or_get("real class")
+        )  # __qualname__ = "real class" (kind of)
         asm.insn("store_name", asm.names_create_or_get("__qualname__"))
 
-        def totally_legitemate_init_method(totally_legitemate_self, *p):  # pseudo __init__
-            print("This \"class\" was generated with inline assembly. here's self:", totally_legitemate_self, ", and here's your args:", p)
+        def totally_legitemate_init_method(
+            totally_legitemate_self, *p
+        ):  # pseudo __init__
+            print(
+                'This "class" was generated with inline assembly. here\'s self:',
+                totally_legitemate_self,
+                ", and here's your args:",
+                p,
+            )
 
-        asm.insn("load_const", asm.consts_create_or_get(totally_legitemate_init_method.__code__))
+        asm.insn(
+            "load_const",
+            asm.consts_create_or_get(totally_legitemate_init_method.__code__),
+        )
         asm.insn("make_function")
-        asm.insn("store_name", asm.names_create_or_get("__init__"))  # make __init__ method using totally_legitemate_init_method
+        asm.insn(
+            "store_name", asm.names_create_or_get("__init__")
+        )  # make __init__ method using totally_legitemate_init_method
         asm.insn("load_const", asm.consts_create_or_get(None))
         asm.insn("return_value")  # return None
         exec(asm.pack_code_object())
 
     generated_class = __build_class__(class_generator, "real class")
-    generated_class("arg 1", "arg 2", 123)  # goes to __init__, which is just totally_legitemate_init_method
+    generated_class(
+        "arg 1", "arg 2", 123
+    )  # goes to __init__, which is just totally_legitemate_init_method
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     run_demo(functions)
     run_demo(hello_world)
     run_demo(try_catch)

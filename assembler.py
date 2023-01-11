@@ -1,3 +1,4 @@
+import dataclasses
 import math
 import opcode
 from types import CodeType
@@ -11,11 +12,11 @@ class _insn:
 
     def to_bc_seq(self):
         bl = self.arg.bit_length()
-        if bl > 4*8:
+        if bl > 4 * 8:
             raise ValueError(f"Arg {self.arg} is too big to pack into 4 bytes")
-        arg_bytes = self.arg.to_bytes(math.ceil(bl/8), "big", signed=False)
+        arg_bytes = self.arg.to_bytes(math.ceil(bl / 8), "big", signed=False)
         if len(arg_bytes) == 0:
-            arg_bytes = b'\x00'
+            arg_bytes = b"\x00"
         constructed = []
         if len(arg_bytes) > 1:
             for x in arg_bytes[:-1]:
@@ -24,6 +25,38 @@ class _insn:
         cache = opcode._inline_cache_entries[self.opc]
         constructed += [0x00] * cache * 2
         return bytes(constructed)
+
+
+class Label(_insn):
+    """
+    Denotes a label
+    """
+
+    def __init__(self):
+        super().__init__(-1, -1)
+
+    def to_bc_seq(self):
+        return b""
+
+
+@dataclasses.dataclass
+class ExcTableE:
+    from_lbl: Label
+    to_lbl: Label
+    handler_lbl: Label
+    depth: int
+    lasti: bool
+
+    def to_bc_seq(self, assembluh):
+        st = assembluh.label_codepos(self.from_lbl)
+        en = assembluh.label_codepos(self.to_lbl)
+        handler = assembluh.label_codepos(self.handler_lbl)
+        return (
+            _encode_varint(st // 2)
+            + _encode_varint((en - st) // 2)
+            + _encode_varint(handler // 2)
+            + _encode_varint(self.depth << 1 | int(self.lasti))
+        )
 
 
 def _encode_varint(value) -> bytes:
@@ -50,46 +83,32 @@ class Assembler:
     An assembler for python bytecode
     """
 
-    class TryCatchBuilder:
-        """
-        Context manager for a try block
-        """
-
-        def __init__(self, assembler, depth: int, lasti: bool):
-            self.assembler = assembler
-            self.start = -1
-            self.end = -1
-            self.target = -1
-            self.depth = depth
-            self.li = lasti
-
-        def __enter__(self):
-            self.start = self.assembler.current_bytecode_index()
-
-        def __exit__(self, exc_type, exc_val, exc_tb):
-            if self.start == -1:
-                raise ValueError("__exit__ called before __enter__ (?)")
-            self.end = self.assembler.current_bytecode_index()
-            self.target = self.end  # weird but it does work, assume handler is directly after
-            self.assembler.add_exception_table_span(self.start, self.end, self.target, self.depth, self.li)
-
-    class _exc_table_entry:
-        def __init__(self, from_i: int, to_i: int, target: int, depth: int, is_lasti: bool):
-            if from_i % 2 != 0 or to_i % 2 != 0 or target % 2 != 0:
-                raise ValueError("Unexpected odd number in either from_i, to_i or target")
-            self.from_i = from_i
-            self.len = to_i - self.from_i
-            self.target = target
-            self.depth = depth
-            self.lasti = is_lasti
-
-        def to_bc_seq(self):
-            bc = b''
-            bc += _encode_varint(self.from_i // 2)  # since bytecode indexes are whole numbers, we can safely divide by 2 to "compress" the varints
-            bc += _encode_varint(self.len // 2)
-            bc += _encode_varint(self.target // 2)
-            bc += _encode_varint(self.depth << 1 | int(self.lasti))
-            return bc
+    # class TryCatchBuilder:
+    #     """
+    #     Context manager for a try block
+    #     """
+    #
+    #     def __init__(self, assembler, depth: int, lasti: bool):
+    #         self.assembler = assembler
+    #         self.start = -1
+    #         self.end = -1
+    #         self.target = -1
+    #         self.depth = depth
+    #         self.li = lasti
+    #
+    #     def __enter__(self):
+    #         self.start = self.assembler.current_bytecode_index()
+    #
+    #     def __exit__(self, exc_type, exc_val, exc_tb):
+    #         if self.start == -1:
+    #             raise ValueError("__exit__ called before __enter__ (?)")
+    #         self.end = self.assembler.current_bytecode_index()
+    #         self.target = (
+    #             self.end
+    #         )  # weird but it does work, assume handler is directly after
+    #         self.assembler.add_exception_table_span(
+    #             self.start, self.end, self.target, self.depth, self.li
+    #         )
 
     def __init__(self, arg_names: list[str] = None):
         """
@@ -128,14 +147,27 @@ class Assembler:
         opm = opcode.opmap[name]
         self.add_insn(opm, arg)
 
-    def try_block(self, depth, lasti):
+    def label_codepos(self, lbl: Label):
+        if lbl not in self.insns:
+            raise ValueError(
+                "Label wasn't found. Register label first using assembler.label()"
+            )
+        idx = self.insns.index(lbl)
+        bc = b"".join([x.to_bc_seq() for x in self.insns[:idx]])
+        return len(bc)
+
+    def label(self, lbl: Label = None) -> Label:
         """
-        Creates a "try" block, and assumes that the handler follows immediately afterwards. Use in a `with` statement.
-        :param depth: The depth of the handler
-        :param lasti: Unknown
-        :return: A try-catch builder
+        Adds or creates a label
+        :param lbl: The label to add. May be None
+        :return: The added label, either new or lbl
         """
-        return self.TryCatchBuilder(self, depth, lasti)
+        if lbl is None:
+            lbl = Label()
+        if lbl in self.insns:
+            raise ValueError("Label already registered")
+        self.insns.append(lbl)
+        return lbl
 
     def add_insn(self, opcode: int, arg: int = 0):
         """
@@ -152,18 +184,26 @@ class Assembler:
         insn = _insn(opcode, arg)
         self.insns.append(insn)
 
-    def add_exception_table_span(self, from_index: int, to_index: int, target_index: int, depth: int, is_lasti: bool):
+    def add_trycatch(
+        self,
+        from_lbl: Label,
+        to_lbl: Label,
+        target_lbl: Label,
+        depth: int,
+        is_lasti: bool,
+    ):
         """
-        Adds an exception table entry manually. Not recommended to be used instead of try_block(), but can be used if the exception handler does not
-        follow immediately after the throwing block.
-        :param from_index: The starting byte index
-        :param to_index: The ending byte index (exclusive)
-        :param target_index: The index of the start of the handler
-        :param depth: The depth of the handler
+        Adds a try catch span
+        :param from_lbl: The starting label of the try block
+        :param to_lbl: The ending label of the try block
+        :param target_lbl: The starting label of the catch block
+        :param depth: Depth
         :param is_lasti: Unknown
-        :return: Nothing
+        :return:
         """
-        self.exc_table_entries.append(self._exc_table_entry(from_index, to_index, target_index, depth, is_lasti))
+        self.exc_table_entries.append(
+            ExcTableE(from_lbl, to_lbl, target_lbl, depth, is_lasti)
+        )
 
     def _build_co_str(self) -> bytes:
         b = b""
@@ -174,7 +214,7 @@ class Assembler:
     def _build_exc_table(self) -> bytes:
         b = b""
         for x in self.exc_table_entries:
-            b += x.to_bc_seq()
+            b += x.to_bc_seq(self)
         return b
 
     def pack_code_object(self) -> CodeType:
@@ -182,8 +222,24 @@ class Assembler:
         Compiles this assembler into a code object
         :return: The constructed code object. Can be marshalled using marshal.dumps, or executed using eval() or exec()
         """
-        return CodeType(len(self.argnames), 0, 0, len(self.varnames), 30, 0, self._build_co_str(), tuple(self.consts), tuple(self.names),
-                        tuple(self.varnames), "<asm>", "", "", 0, b"", self._build_exc_table())
+        return CodeType(
+            len(self.argnames),
+            0,
+            0,
+            len(self.varnames),
+            30,
+            0,
+            self._build_co_str(),
+            tuple(self.consts),
+            tuple(self.names),
+            tuple(self.varnames),
+            "<asm>",
+            "",
+            "",
+            0,
+            b"",
+            self._build_exc_table(),
+        )
 
     def consts_create_or_get(self, value: Any) -> int:
         """
