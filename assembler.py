@@ -5,29 +5,17 @@ from types import CodeType
 from typing import Any
 
 
-class _insn:
-    def __init__(self, opcode: int, arg: int):
-        self.opc = opcode
-        self.arg = arg
+@dataclasses.dataclass
+class Insn:
+    """
+    Denotes an instruction
+    """
 
-    def to_bc_seq(self):
-        bl = self.arg.bit_length()
-        if bl > 4 * 8:
-            raise ValueError(f"Arg {self.arg} is too big to pack into 4 bytes")
-        arg_bytes = self.arg.to_bytes(math.ceil(bl / 8), "big", signed=False)
-        if len(arg_bytes) == 0:
-            arg_bytes = b"\x00"
-        constructed = []
-        if len(arg_bytes) > 1:
-            for x in arg_bytes[:-1]:
-                constructed += [0x90, x]  # EXTENDED_ARG x
-        constructed += [self.opc, arg_bytes[len(arg_bytes) - 1]]
-        cache = opcode._inline_cache_entries[self.opc]
-        constructed += [0x00] * cache * 2
-        return bytes(constructed)
+    opc: int
+    arg: int
 
 
-class Label(_insn):
+class Label(Insn):
     """
     Denotes a label
     """
@@ -35,28 +23,56 @@ class Label(_insn):
     def __init__(self):
         super().__init__(-1, -1)
 
-    def to_bc_seq(self):
-        return b""
+    def __eq__(self, other):
+        return id(other) == id(self)  # strict eq
 
 
 @dataclasses.dataclass
-class ExcTableE:
+class ExcTableEntry:
     from_lbl: Label
     to_lbl: Label
     handler_lbl: Label
     depth: int
     lasti: bool
 
-    def to_bc_seq(self, assembluh):
-        st = assembluh.label_codepos(self.from_lbl)
-        en = assembluh.label_codepos(self.to_lbl)
-        handler = assembluh.label_codepos(self.handler_lbl)
+
+class VersionCodec:
+    def encode_trycatch(self, exc_entry: ExcTableEntry, assembler) -> bytes:
+        raise NotImplementedError()
+
+    def encode_insn(self, insn: Insn, assembler) -> bytes:
+        raise NotImplementedError()
+
+
+class VerCodec311(VersionCodec):
+    def encode_trycatch(self, exc_entry: ExcTableEntry, assembler) -> bytes:
+        st = assembler.label_codepos(exc_entry.from_lbl)
+        en = assembler.label_codepos(exc_entry.to_lbl)
+        handler = assembler.label_codepos(exc_entry.handler_lbl)
         return (
             _encode_varint(st // 2)
             + _encode_varint((en - st) // 2)
             + _encode_varint(handler // 2)
-            + _encode_varint(self.depth << 1 | int(self.lasti))
+            + _encode_varint(exc_entry.depth << 1 | int(exc_entry.lasti))
         )
+
+    def encode_insn(self, insn: Insn, assembler) -> bytes:
+        if type(insn) == Label:
+            return b""  # special case: no content
+        bl = insn.arg.bit_length()
+        if bl > 4 * 8:
+            raise ValueError(f"Arg {insn.arg} is too big to pack into 4 bytes")
+        arg_bytes = insn.arg.to_bytes(math.ceil(bl / 8), "big", signed=False)
+        if len(arg_bytes) == 0:
+            arg_bytes = b"\x00"
+        constructed = []
+        if len(arg_bytes) > 1:
+            for x in arg_bytes[:-1]:
+                constructed += [0x90, x]  # EXTENDED_ARG x
+        constructed += [insn.opc, arg_bytes[len(arg_bytes) - 1]]
+        cache = opcode._inline_cache_entries[insn.opc]
+        constructed += [0x00] * cache * 2
+        return bytes(constructed)
 
 
 def _encode_varint(value) -> bytes:
@@ -83,46 +99,21 @@ class Assembler:
     An assembler for python bytecode
     """
 
-    # class TryCatchBuilder:
-    #     """
-    #     Context manager for a try block
-    #     """
-    #
-    #     def __init__(self, assembler, depth: int, lasti: bool):
-    #         self.assembler = assembler
-    #         self.start = -1
-    #         self.end = -1
-    #         self.target = -1
-    #         self.depth = depth
-    #         self.li = lasti
-    #
-    #     def __enter__(self):
-    #         self.start = self.assembler.current_bytecode_index()
-    #
-    #     def __exit__(self, exc_type, exc_val, exc_tb):
-    #         if self.start == -1:
-    #             raise ValueError("__exit__ called before __enter__ (?)")
-    #         self.end = self.assembler.current_bytecode_index()
-    #         self.target = (
-    #             self.end
-    #         )  # weird but it does work, assume handler is directly after
-    #         self.assembler.add_exception_table_span(
-    #             self.start, self.end, self.target, self.depth, self.li
-    #         )
-
-    def __init__(self, arg_names: list[str] = None):
+    def __init__(self, arg_names: list[str] = None, codec: VersionCodec = None):
         """
         Creates a new assembler
         :param arg_names: The argument names, if this assembler describes a method. None otherwise (and by default).
+        :param codec: The version codec
         """
         if arg_names is None:
             arg_names = list()
-        self.insns = []
-        self.consts = []
-        self.names = []
-        self.varnames = []
-        self.exc_table_entries = []
-        self.argnames = arg_names
+        self.insns: list[Insn] = []
+        self.consts: list[Any] = []
+        self.names: list[str] = []
+        self.varnames: list[str] = []
+        self.exc_table_entries: list[ExcTableEntry] = []
+        self.argnames: list[str] = arg_names
+        self.codec: VersionCodec = codec if codec is not None else VerCodec311()
         for n in arg_names:
             self.locals_create_or_get(n)
 
@@ -131,7 +122,7 @@ class Assembler:
         Returns the length of the currently built bytecode sequence (aka the index of the next instruction)
         :return: the length of the currently built bytecode sequence
         """
-        return len(self._build_co_str())
+        return len(self.build_bytecode())
 
     def insn(self, name: str, arg: int = 0):
         """
@@ -153,7 +144,7 @@ class Assembler:
                 "Label wasn't found. Register label first using assembler.label()"
             )
         idx = self.insns.index(lbl)
-        bc = b"".join([x.to_bc_seq() for x in self.insns[:idx]])
+        bc = b"".join([self.codec.encode_insn(x, self) for x in self.insns[:idx]])
         return len(bc)
 
     def label(self, lbl: Label = None) -> Label:
@@ -164,8 +155,6 @@ class Assembler:
         """
         if lbl is None:
             lbl = Label()
-        if lbl in self.insns:
-            raise ValueError("Label already registered")
         self.insns.append(lbl)
         return lbl
 
@@ -181,7 +170,7 @@ class Assembler:
             raise ValueError("Opcode not in range 0-255")
         if arg < 0:
             raise ValueError("arg out of bounds")
-        insn = _insn(opcode, arg)
+        insn = Insn(opcode, arg)
         self.insns.append(insn)
 
     def add_trycatch(
@@ -202,22 +191,30 @@ class Assembler:
         :return:
         """
         self.exc_table_entries.append(
-            ExcTableE(from_lbl, to_lbl, target_lbl, depth, is_lasti)
+            ExcTableEntry(from_lbl, to_lbl, target_lbl, depth, is_lasti)
         )
 
-    def _build_co_str(self) -> bytes:
+    def build_bytecode(self) -> bytes:
+        """
+        Builds a bytecode string representing this assembler
+        :return: The bytecode string
+        """
         b = b""
         for x in self.insns:
-            b += x.to_bc_seq()
+            b += self.codec.encode_insn(x, self)
         return b
 
-    def _build_exc_table(self) -> bytes:
+    def build_exceptiontable(self) -> bytes:
+        """
+        Builds the exception table string
+        :return: The exception table string
+        """
         b = b""
         for x in self.exc_table_entries:
-            b += x.to_bc_seq(self)
+            b += self.codec.encode_trycatch(x, self)
         return b
 
-    def pack_code_object(self) -> CodeType:
+    def build(self) -> CodeType:
         """
         Compiles this assembler into a code object
         :return: The constructed code object. Can be marshalled using marshal.dumps, or executed using eval() or exec()
@@ -229,7 +226,7 @@ class Assembler:
             len(self.varnames),
             30,
             0,
-            self._build_co_str(),
+            self.build_bytecode(),
             tuple(self.consts),
             tuple(self.names),
             tuple(self.varnames),
@@ -238,7 +235,7 @@ class Assembler:
             "",
             0,
             b"",
-            self._build_exc_table(),
+            self.build_exceptiontable(),
         )
 
     def consts_create_or_get(self, value: Any) -> int:

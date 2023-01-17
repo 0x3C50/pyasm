@@ -21,7 +21,7 @@ def functions():
     asm.insn("RESUME", 0)
 
     asm.insn(
-        "LOAD_CONST", asm.consts_create_or_get(func1.pack_code_object())
+        "LOAD_CONST", asm.consts_create_or_get(func1.build())
     )  # load function's code object
     asm.insn("MAKE_FUNCTION")  # make function with code object
     asm.insn(
@@ -42,7 +42,7 @@ def functions():
     asm.insn("LOAD_CONST", asm.consts_create_or_get(None))  # load None
     asm.insn("RETURN_VALUE")  # return None
 
-    return asm.pack_code_object()
+    return asm.build()
 
 
 def hello_world():
@@ -61,7 +61,7 @@ def hello_world():
     asm.insn("LOAD_CONST", asm.consts_create_or_get(None))  # load None
     asm.insn("RETURN_VALUE")  # return None
 
-    return asm.pack_code_object()
+    return asm.build()
 
 
 def try_catch():
@@ -114,7 +114,7 @@ def try_catch():
     asm.insn("POP_EXCEPT", 0)  # pop exception
     asm.insn("RERAISE", 1)  # raise exception
 
-    return asm.pack_code_object()
+    return asm.build()
 
 
 def run_demo(fnc):
@@ -166,7 +166,7 @@ def inline_assembly():
         )  # make __init__ method using totally_legitemate_init_method
         asm.insn("load_const", asm.consts_create_or_get(None))
         asm.insn("return_value")  # return None
-        exec(asm.pack_code_object())
+        exec(asm.build())
 
     generated_class = __build_class__(class_generator, "real class")
     generated_class(
